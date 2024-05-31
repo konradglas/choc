@@ -21,6 +21,7 @@
 
 #include <chrono>
 #include <iostream>
+#include <istream>
 #include <vector>
 #include "choc_zlib.h"
 #include "../memory/choc_Endianness.h"
@@ -77,6 +78,8 @@ struct ZipFile
         bool uncompressToFile (const std::filesystem::path& targetFolder,
                                bool overwriteExistingFile,
                                bool setFileTime) const;
+
+    inline std::optional<std::filesystem::path> getSymlinkTarget() const;
 
     private:
         struct ZipStream;
@@ -275,6 +278,20 @@ inline bool ZipFile::Item::isFolder() const
     return ! filename.empty() && (filename.back() == '/' || filename.back() == '\\');
 }
 
+inline std::optional<std::filesystem::path> ZipFile::Item::getSymlinkTarget() const {
+    if (!isSymLink())
+        return {};
+
+    std::vector<std::istream::char_type> buffer(uncompressedSize);
+    auto reader = createReader();
+    auto numRead = file::attemptToRead(*reader, buffer.data(), buffer.size());
+
+    if (numRead == 0)
+        return {};
+
+    return std::string(buffer.data(), buffer.data() + numRead);
+}
+
 struct ZipFile::Item::ZipStream  : public  std::istream,
                                    private std::streambuf
 {
@@ -365,8 +382,35 @@ inline bool ZipFile::Item::uncompressToFile (const std::filesystem::path& target
         return true;
     }
 
-    if (isSymLink())
-        throw std::runtime_error ("Failed to uncompress " + targetFile.string() + ": file was a symbolic link");
+  if (isSymLink()) 
+  {
+    if (exists(targetFile)) 
+    {
+      if (overwriteExistingFile)
+        return true;
+      if (!remove(targetFile))
+        return false;
+    }
+    if (auto symlinkTarget = getSymlinkTarget()) 
+    {
+      try {
+        if (is_directory(*symlinkTarget))
+        {
+            create_directory_symlink(*symlinkTarget, targetFile);
+        }
+        else 
+        {
+            create_symlink(*symlinkTarget, targetFile);
+        }
+      } 
+      catch (std::filesystem::filesystem_error& error) 
+      {
+          throw std::runtime_error("Failed to create symlink: " +
+                               targetFile.string() + " to " + symlinkTarget->string());
+      }
+    }
+    return false;
+  }
 
     auto reader = createReader();
 
